@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Manhattan Drive</title>
+<style>
+  :root {
+    --hud-bg: rgba(10, 12, 16, 0.55);
+    --hud-fg: #e9edf2;
+    --accent: #ff5a3c;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+    background: #0a0c10;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    touch-action: none;
+  }
+  canvas { display: block; }
+
+  /* ---------- Loading screen ---------- */
+  #loading {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    background: #0a0c10;
+    color: var(--hud-fg);
+    z-index: 50;
+    transition: opacity 0.5s ease;
+  }
+  #loading h1 { font-size: 1.1rem; font-weight: 600; letter-spacing: 0.04em; margin: 0; opacity: 0.85; }
+  #loading-bar-track {
+    width: min(70vw, 360px);
+    height: 6px;
+    background: rgba(255,255,255,0.12);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  #loading-bar-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    transition: width 0.15s ease;
+  }
+  #loading-pct { font-size: 0.8rem; opacity: 0.6; }
+  #loading.hidden { opacity: 0; pointer-events: none; }
+
+  /* ---------- HUD ---------- */
+  #hud {
+    position: fixed;
+    top: env(safe-area-inset-top, 0px);
+    left: 0;
+    right: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding: 14px 16px;
+    pointer-events: none;
+    z-index: 10;
+  }
+  #speed-readout {
+    background: var(--hud-bg);
+    color: var(--hud-fg);
+    padding: 8px 14px;
+    border-radius: 10px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    backdrop-filter: blur(6px);
+  }
+  #speed-readout span { color: var(--accent); }
+  #hint {
+    background: var(--hud-bg);
+    color: var(--hud-fg);
+    padding: 8px 14px;
+    border-radius: 10px;
+    font-size: 0.78rem;
+    max-width: 220px;
+    text-align: right;
+    backdrop-filter: blur(6px);
+    opacity: 0.85;
+  }
+
+  /* ---------- Touch controls ---------- */
+  #touch-controls {
+    position: fixed;
+    bottom: env(safe-area-inset-bottom, 0px);
+    left: 0;
+    right: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    padding: 0 18px 22px;
+    z-index: 10;
+    user-select: none;
+  }
+  .pad-group {
+    display: flex;
+    gap: 12px;
+  }
+  .pad-btn {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    background: var(--hud-bg);
+    color: var(--hud-fg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.4rem;
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(255,255,255,0.15);
+    touch-action: none;
+  }
+  .pad-btn.active {
+    background: var(--accent);
+    color: #1a0f0a;
+  }
+  @media (min-width: 900px) {
+    #touch-controls { display: none; } /* hide on likely-desktop widths; keyboard works regardless */
+  }
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <h1>LOADING MANHATTAN</h1>
+  <div id="loading-bar-track"><div id="loading-bar-fill"></div></div>
+  <div id="loading-pct">0%</div>
+</div>
+
+<div id="hud">
+  <div id="speed-readout">SPEED <span id="speed-val">0</span> mph</div>
+  <div id="hint">WASD / Arrows to drive · Touch pad on mobile</div>
+</div>
+
+<div id="touch-controls">
+  <div class="pad-group">
+    <div class="pad-btn" data-key="left">◀</div>
+    <div class="pad-btn" data-key="right">▶</div>
+  </div>
+  <div class="pad-group">
+    <div class="pad-btn" data-key="back">▼</div>
+    <div class="pad-btn" data-key="forward">▲</div>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
+
+/* ============================================================
+   CONFIG — adjust these if your repo layout differs
+   ============================================================ */
+const MODEL_URL    = "./manhattan.fbx"; // path to the FBX, relative to this HTML file
+const TEXTURE_DIR  = "./textures/";     // folder containing all the texture images
+
+/* ============================================================
+   BASIC SCENE SETUP
+   ============================================================ */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x9fc6e0);
+
+const camera = new THREE.PerspectiveCamera(
+  60,
+  window.innerWidth / window.innerHeight,
+  0.1,
+  10000
+);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// Lighting — sun + soft sky fill
+const hemi = new THREE.HemisphereLight(0xddeeff, 0x444444, 1.1);
+scene.add(hemi);
+
+const sun = new THREE.DirectionalLight(0xfff3e0, 2.2);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+scene.add(sun);
+scene.add(sun.target);
+
+/* ============================================================
+   LOADING MANAGER  (drives the progress bar)
+   ============================================================ */
+const manager = new THREE.LoadingManager();
+const loadingEl    = document.getElementById("loading");
+const barFillEl    = document.getElementById("loading-bar-fill");
+const pctEl        = document.getElementById("loading-pct");
+
+manager.onProgress = (url, loaded, total) => {
+  if (total > 0) {
+    const pct = Math.min(100, Math.round((loaded / total) * 100));
+    barFillEl.style.width = pct + "%";
+    pctEl.textContent = pct + "%";
+  }
+};
+manager.onError = (url) => console.warn("Failed to load asset:", url);
+manager.onLoad = () => {
+  loadingEl.classList.add("hidden");
+  setTimeout(() => loadingEl.remove(), 600);
+};
+
+/* ============================================================
+   LOAD THE MAP
+   ============================================================ */
+let groundY = 0;          // world Y considered "ground" near spawn
+let mapScale = 100;       // rough horizontal size of the map, used to size/scale everything else
+
+const fbxLoader = new FBXLoader(manager);
+fbxLoader.setPath("./");
+fbxLoader.setResourcePath(TEXTURE_DIR);
+
+fbxLoader.load(
+  MODEL_URL,
+  (model) => {
+    model.traverse((child) => {
+      if (child.isMesh) {
+        child.castShadow = true;
+        child.receiveShadow = true;
+        // FBX materials sometimes import as double-sided / lacking proper settings — keep defaults otherwise.
+        if (child.material) {
+          child.material.shadowSide = THREE.BackSide;
+        }
+      }
+    });
+
+    scene.add(model);
+
+    // Work out the map's real size so the rest of the scene (car, camera, fog, lights)
+    // can scale itself sensibly no matter what units the FBX was exported in.
+    const box = new THREE.Box3().setFromObject(model);
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    mapScale = Math.max(size.x, size.z);
+
+    // Find actual ground height under the map's center by raycasting straight down,
+    // rather than trusting box.min.y (which can be thrown off by underground geometry).
+    const ray = new THREE.Raycaster(
+      new THREE.Vector3(center.x, box.max.y + mapScale, center.z),
+      new THREE.Vector3(0, -1, 0)
+    );
+    const hits = ray.intersectObject(model, true);
+    groundY = hits.length > 0 ? hits[0].point.y : box.min.y;
+
+    // Position the sun + shadow frustum relative to the map size.
+    sun.position.set(center.x + mapScale * 0.4, mapScale * 0.8, center.z + mapScale * 0.3);
+    sun.target.position.set(center.x, groundY, center.z);
+    sun.shadow.camera.left = -mapScale * 0.6;
+    sun.shadow.camera.right = mapScale * 0.6;
+    sun.shadow.camera.top = mapScale * 0.6;
+    sun.shadow.camera.bottom = -mapScale * 0.6;
+    sun.shadow.camera.near = 1;
+    sun.shadow.camera.far = mapScale * 3;
+    sun.shadow.camera.updateProjectionMatrix();
+
+    // Fog scaled to the map so distant buildings fade instead of hard-clipping.
+    scene.fog = new THREE.Fog(0x9fc6e0, mapScale * 0.3, mapScale * 2.2);
+    camera.far = mapScale * 3;
+    camera.updateProjectionMatrix();
+
+    // Spawn the car at the map's center, on the ground.
+    buildCar(mapScale);
+    car.position.set(center.x, groundY, center.z);
+  },
+  undefined,
+  (err) => {
+    console.error("Error loading FBX:", err);
+    loadingEl.querySelector("h1").textContent = "FAILED TO LOAD MAP — check console";
+  }
+);
+
+/* ============================================================
+   CAR  (built procedurally — no separate car model needed)
+   ============================================================ */
+let car;                 // THREE.Group — the whole vehicle
+let wheelFL, wheelFR, wheelRL, wheelRR;
+let carLength = 4;        // recalculated in buildCar() based on map scale
+
+const carState = {
+  speed: 0,
+  heading: 0, // radians
+};
+
+const CAR_TUNING = {
+  accel: 0,        // set per-scale in buildCar()
+  maxSpeed: 0,
+  maxReverse: 0,
+  friction: 0,
+  turnRate: 0,
+};
+
+function buildCar(scaleRef) {
+  // Size the car as a small fraction of the overall map so it looks right
+  // regardless of whether the FBX units are meters, centimeters, etc.
+  carLength = THREE.MathUtils.clamp(scaleRef * 0.012, 1, 40);
+  const carWidth  = carLength * 0.46;
+  const carHeight = carLength * 0.4;
+  const wheelRadius = carHeight * 0.32;
+
+  CAR_TUNING.accel      = carLength * 6;
+  CAR_TUNING.maxSpeed   = carLength * 14;
+  CAR_TUNING.maxReverse = carLength * 7;
+  CAR_TUNING.friction   = carLength * 5;
+  CAR_TUNING.turnRate   = 2.4;
+
+  car = new THREE.Group();
+
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0xe6402c, roughness: 0.45, metalness: 0.55 });
+  const cabinMat = new THREE.MeshStandardMaterial({ color: 0x1b2026, roughness: 0.2, metalness: 0.3 });
+  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x111315, roughness: 0.9, metalness: 0.1 });
+  const lightMat = new THREE.MeshStandardMaterial({ color: 0xfff3c2, emissive: 0xfff3c2, emissiveIntensity: 1.2 });
+
+  // Lower chassis
+  const chassis = new THREE.Mesh(
+    new THREE.BoxGeometry(carWidth, carHeight * 0.55, carLength),
+    bodyMat
+  );
+  chassis.position.y = wheelRadius + carHeight * 0.275;
+  chassis.castShadow = true;
+  car.add(chassis);
+
+  // Cabin / roof
+  const cabin = new THREE.Mesh(
+    new THREE.BoxGeometry(carWidth * 0.78, carHeight * 0.5, carLength * 0.5),
+    cabinMat
+  );
+  cabin.position.set(0, wheelRadius + carHeight * 0.55 + carHeight * 0.25, -carLength * 0.05);
+  cabin.castShadow = true;
+  car.add(cabin);
+
+  // Headlights
+  [-1, 1].forEach((side) => {
+    const light = new THREE.Mesh(new THREE.SphereGeometry(wheelRadius * 0.25, 8, 8), lightMat);
+    light.position.set(side * carWidth * 0.35, wheelRadius + carHeight * 0.25, carLength * 0.51);
+    car.add(light);
+  });
+
+  // Wheels
+  const wheelGeo = new THREE.CylinderGeometry(wheelRadius, wheelRadius, carWidth * 0.22, 16);
+  function makeWheel(x, z) {
+    const w = new THREE.Mesh(wheelGeo, wheelMat);
+    w.rotation.z = Math.PI / 2;
+    w.position.set(x, wheelRadius, z);
+    w.castShadow = true;
+    car.add(w);
+    return w;
+  }
+  const axleX = carWidth * 0.5 + 0.01;
+  wheelFL = makeWheel(-axleX, carLength * 0.32);
+  wheelFR = makeWheel(axleX, carLength * 0.32);
+  wheelRL = makeWheel(-axleX, -carLength * 0.32);
+  wheelRR = makeWheel(axleX, -carLength * 0.32);
+
+  scene.add(car);
+}
+
+/* ============================================================
+   INPUT  (keyboard + on-screen touch pad share the same state)
+   ============================================================ */
+const input = { forward: false, back: false, left: false, right: false };
+
+const KEY_MAP = {
+  ArrowUp: "forward", w: "forward", W: "forward",
+  ArrowDown: "back",  s: "back",    S: "back",
+  ArrowLeft: "left",  a: "left",    A: "left",
+  ArrowRight: "right", d: "right",  D: "right",
+};
+
+window.addEventListener("keydown", (e) => {
+  const k = KEY_MAP[e.key];
+  if (k) { input[k] = true; e.preventDefault(); }
+});
+window.addEventListener("keyup", (e) => {
+  const k = KEY_MAP[e.key];
+  if (k) { input[k] = false; e.preventDefault(); }
+});
+
+document.querySelectorAll(".pad-btn").forEach((btn) => {
+  const key = btn.dataset.key;
+  const setActive = (v) => { input[key] = v; btn.classList.toggle("active", v); };
+  btn.addEventListener("pointerdown", (e) => { e.preventDefault(); setActive(true); });
+  btn.addEventListener("pointerup",   () => setActive(false));
+  btn.addEventListener("pointerleave",() => setActive(false));
+  btn.addEventListener("pointercancel",() => setActive(false));
+});
+
+/* ============================================================
+   CHASE CAMERA
+   ============================================================ */
+const camOffset = new THREE.Vector3(); // recalculated each frame relative to car heading
+const camTargetPos = new THREE.Vector3();
+const camLookAt = new THREE.Vector3();
+
+function updateCamera(dt) {
+  if (!car) return;
+  const dist = carLength * 3.2;
+  const height = carLength * 1.6;
+
+  camOffset.set(Math.sin(carState.heading) * -dist, height, Math.cos(carState.heading) * -dist);
+  camTargetPos.copy(car.position).add(camOffset);
+
+  const lerpFactor = 1 - Math.pow(0.001, dt); // smooth, frame-rate independent
+  camera.position.lerp(camTargetPos, lerpFactor);
+
+  camLookAt.copy(car.position).add(new THREE.Vector3(0, carLength * 0.5, 0));
+  camera.lookAt(camLookAt);
+}
+
+/* ============================================================
+   MAIN LOOP
+   ============================================================ */
+const speedValEl = document.getElementById("speed-val");
+const clock = new THREE.Clock();
+
+function updateCar(dt) {
+  if (!car) return;
+
+  // Acceleration / braking
+  if (input.forward) {
+    carState.speed += CAR_TUNING.accel * dt;
+  } else if (input.back) {
+    carState.speed -= CAR_TUNING.accel * dt;
+  } else {
+    // natural friction toward zero
+    const sign = Math.sign(carState.speed);
+    carState.speed -= sign * CAR_TUNING.friction * dt;
+    if (Math.sign(carState.speed) !== sign) carState.speed = 0;
+  }
+  carState.speed = THREE.MathUtils.clamp(carState.speed, -CAR_TUNING.maxReverse, CAR_TUNING.maxSpeed);
+
+  // Steering — turn rate scales with how fast you're going (can't pivot in place like a tank)
+  const speedFactor = THREE.MathUtils.clamp(Math.abs(carState.speed) / (CAR_TUNING.maxSpeed * 0.3), 0.15, 1);
+  let steerInput = 0;
+  if (input.left) steerInput += 1;
+  if (input.right) steerInput -= 1;
+  if (carState.speed < 0) steerInput *= -1; // reversing flips steering, like a real car
+
+  carState.heading += steerInput * CAR_TUNING.turnRate * speedFactor * dt;
+
+  // Move
+  car.position.x += Math.sin(carState.heading) * carState.speed * dt;
+  car.position.z += Math.cos(carState.heading) * carState.speed * dt;
+  car.rotation.y = carState.heading;
+
+  // Spin wheels for feedback
+  const wheelSpin = (carState.speed * dt) / (carLength * 0.16);
+  [wheelFL, wheelFR, wheelRL, wheelRR].forEach((w) => { w.rotation.x -= wheelSpin; });
+
+  // HUD
+  const mph = Math.abs(carState.speed) * 2.0; // arbitrary display scale, purely cosmetic
+  speedValEl.textContent = mph.toFixed(0);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  updateCar(dt);
+  updateCamera(dt);
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
